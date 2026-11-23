@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
-import { q, tx, bump, newId, newSessionId, purgeOld } from './db.js';
+import { q, st, init, storage, newId, newSessionId, purgeOld, deleteSessionStatements } from './db.js';
 import { clusterEntries } from './cluster.js';
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
@@ -115,16 +115,14 @@ async function sendFile(res, dir, name, cache = 'no-cache') {
 
 // ---------- Datenzugriff ----------
 
-const getSession = (id) =>
-  q.get('SELECT * FROM sessions WHERE id = ?', id) || fail(404, 'Session nicht gefunden.');
-const entryCount = (id) =>
-  q.get('SELECT COUNT(*) AS n FROM entries WHERE session_id = ?', id).n;
-const ballotCount = (id) =>
-  q.get('SELECT COUNT(*) AS n FROM ballots WHERE session_id = ?', id).n;
+const getSession = async (id) =>
+  (await q.get('SELECT * FROM sessions WHERE id = ?', id)) || fail(404, 'Session nicht gefunden.');
+const count = async (table, id) =>
+  (await q.get(`SELECT COUNT(*) AS n FROM ${table} WHERE session_id = ?`, id)).n;
 
-function points(sessionId) {
+async function points(sessionId) {
   const sum = {};
-  for (const b of q.all('SELECT allocations FROM ballots WHERE session_id = ?', sessionId)) {
+  for (const b of await q.all('SELECT allocations FROM ballots WHERE session_id = ?', sessionId)) {
     for (const [cid, n] of Object.entries(JSON.parse(b.allocations))) {
       sum[cid] = (sum[cid] || 0) + n;
     }
@@ -140,13 +138,12 @@ const entryView = (e) => ({
 });
 
 // Cluster mit sichtbaren Beiträgen, Beiträge in zufälliger (stabiler) Reihenfolge
-function visibleClusters(sessionId) {
-  const entries = q.all(
+async function visibleClusters(sessionId) {
+  const entries = await q.all(
     'SELECT * FROM entries WHERE session_id = ? AND hidden = 0 ORDER BY sort_key',
     sessionId,
   );
-  return q
-    .all('SELECT * FROM clusters WHERE session_id = ? ORDER BY position', sessionId)
+  return (await q.all('SELECT * FROM clusters WHERE session_id = ? ORDER BY position', sessionId))
     .map((c) => ({
       id: c.id,
       title: c.title,
@@ -156,7 +153,7 @@ function visibleClusters(sessionId) {
 }
 
 // Was Teilnehmende und Beamer sehen dürfen – abhängig von der Phase.
-function publicState(s) {
+async function publicState(s) {
   const out = {
     id: s.id,
     title: s.title,
@@ -164,21 +161,52 @@ function publicState(s) {
     phase: s.phase,
     version: s.version,
     votesPerPerson: s.votes_per_person,
-    count: entryCount(s.id),
+    count: await count('entries', s.id),
   };
   if (['reveal', 'vote', 'result'].includes(s.phase)) {
-    out.clusters = visibleClusters(s.id);
+    out.clusters = await visibleClusters(s.id);
     out.focus = out.clusters.some((c) => c.id === s.focus_cluster) ? s.focus_cluster : null;
   }
-  if (s.phase === 'vote' || s.phase === 'result') out.ballots = ballotCount(s.id);
+  if (s.phase === 'vote' || s.phase === 'result') out.ballots = await count('ballots', s.id);
   if (s.phase === 'result') {
-    const p = points(s.id);
+    const p = await points(s.id);
     for (const c of out.clusters) c.points = p[c.id] || 0;
   }
   return out;
 }
 
-function adminState(s) {
+// Zwischenspeicher für den öffentlichen Stand. Alle Geräte fragen alle 2 s nach;
+// ohne Änderung kostet das keine Datenbankabfrage. Setzt genau eine laufende
+// Instanz voraus (siehe README).
+const cache = new Map(); // sessionId → { version, pub }
+const generation = new Map();
+function touch(id) {
+  cache.delete(id);
+  generation.set(id, (generation.get(id) || 0) + 1);
+}
+function forget(id) {
+  cache.delete(id);
+  generation.delete(id);
+}
+async function current(id) {
+  const hit = cache.get(id);
+  if (hit) return hit;
+  const g = generation.get(id) || 0;
+  const s = await getSession(id);
+  const entry = { version: s.version, pub: await publicState(s) };
+  // Nur merken, wenn währenddessen nichts geändert wurde.
+  if ((generation.get(id) || 0) === g) cache.set(id, entry);
+  return entry;
+}
+
+const bump = (id) => st('UPDATE sessions SET version = version + 1 WHERE id = ?', id);
+// Änderung schreiben: Statements und Versionssprung in einer Transaktion.
+async function write(id, ...statements) {
+  await q.batch([...statements.flat(), bump(id)]);
+  touch(id);
+}
+
+async function adminState(s) {
   const out = {
     id: s.id,
     title: s.title,
@@ -188,72 +216,66 @@ function adminState(s) {
     votesPerPerson: s.votes_per_person,
     createdDay: s.created_day,
     focus: s.focus_cluster,
-    count: entryCount(s.id),
-    ballots: ballotCount(s.id),
+    count: await count('entries', s.id),
+    ballots: await count('ballots', s.id),
     aiAvailable: Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
     minForAi: MIN_FOR_AI,
   };
   // Während der Sammlung sieht auch der Moderator keine Inhalte.
   if (s.phase !== 'collect') {
-    out.clusters = q
-      .all('SELECT id, title FROM clusters WHERE session_id = ? ORDER BY position', s.id);
-    out.entries = q
-      .all('SELECT * FROM entries WHERE session_id = ? ORDER BY sort_key', s.id)
+    out.clusters = (await q.all(
+      'SELECT id, title FROM clusters WHERE session_id = ? ORDER BY position', s.id,
+    )).map((c) => ({ id: c.id, title: c.title }));
+    out.entries = (await q.all('SELECT * FROM entries WHERE session_id = ? ORDER BY sort_key', s.id))
       .map((e) => ({ ...entryView(e), clusterId: e.cluster_id, hidden: Boolean(e.hidden) }));
-    if (s.phase === 'result') out.points = points(s.id);
+    if (s.phase === 'result') out.points = await points(s.id);
   }
   return out;
 }
 
-const nextPosition = (sessionId) =>
-  q.get('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM clusters WHERE session_id = ?', sessionId).p;
-
-function addCluster(sessionId, title) {
-  const id = newId();
-  q.run(
-    'INSERT INTO clusters (id, session_id, title, position) VALUES (?, ?, ?, ?)',
-    id, sessionId, title, nextPosition(sessionId),
-  );
-  return id;
-}
+const addClusterSt = (id, sessionId, title) => st(
+  `INSERT INTO clusters (id, session_id, title, position)
+   SELECT ?, ?, ?, COALESCE(MAX(position), 0) + 1 FROM clusters WHERE session_id = ?`,
+  id, sessionId, title, sessionId,
+);
 
 // Vor der Freigabe: Beiträge ohne Cluster landen in "Weitere Themen",
 // damit nichts stillschweigend unter den Tisch fällt.
-function assignLeftovers(sessionId) {
-  const loose = q.all(
-    'SELECT id FROM entries WHERE session_id = ? AND cluster_id IS NULL', sessionId,
+async function leftoverStatements(sessionId) {
+  const loose = await q.get(
+    'SELECT COUNT(*) AS n FROM entries WHERE session_id = ? AND cluster_id IS NULL', sessionId,
   );
-  if (!loose.length) return;
-  const any = q.get('SELECT COUNT(*) AS n FROM clusters WHERE session_id = ?', sessionId).n;
-  const title = any ? 'Weitere Themen' : 'Beiträge';
-  const existing = q.get(
+  if (!loose.n) return [];
+  const title = (await count('clusters', sessionId)) ? 'Weitere Themen' : 'Beiträge';
+  const existing = await q.get(
     'SELECT id FROM clusters WHERE session_id = ? AND title = ?', sessionId, title,
   );
-  const cid = existing ? existing.id : addCluster(sessionId, title);
-  q.run('UPDATE entries SET cluster_id = ? WHERE session_id = ? AND cluster_id IS NULL', cid, sessionId);
+  const cid = existing ? existing.id : newId();
+  return [
+    !existing && addClusterSt(cid, sessionId, title),
+    st('UPDATE entries SET cluster_id = ? WHERE session_id = ? AND cluster_id IS NULL', cid, sessionId),
+  ].filter(Boolean);
 }
 
-function pruneEmptyClusters(sessionId) {
-  q.run(
-    `DELETE FROM clusters WHERE session_id = ?
-     AND id NOT IN (SELECT cluster_id FROM entries WHERE session_id = ? AND cluster_id IS NOT NULL)`,
-    sessionId, sessionId,
-  );
-}
+const pruneEmptyClustersSt = (sessionId) => st(
+  `DELETE FROM clusters WHERE session_id = ?
+   AND id NOT IN (SELECT cluster_id FROM entries WHERE session_id = ? AND cluster_id IS NOT NULL)`,
+  sessionId, sessionId,
+);
 
 // ---------- Export ----------
 
-function exportData(s) {
-  const p = points(s.id);
-  const clusters = visibleClusters(s.id).map((c) => ({ ...c, points: p[c.id] || 0 }));
+async function exportData(s) {
+  const p = await points(s.id);
+  const clusters = (await visibleClusters(s.id)).map((c) => ({ ...c, points: p[c.id] || 0 }));
   if (s.phase === 'result') clusters.sort((a, b) => b.points - a.points);
   return clusters;
 }
 
-function exportMarkdown(s) {
-  const voted = ballotCount(s.id) > 0;
+async function exportMarkdown(s) {
+  const voted = (await count('ballots', s.id)) > 0;
   const lines = [`# ${s.title}`, '', `**Leitfrage:** ${s.question}`, ''];
-  for (const c of exportData(s)) {
+  for (const c of await exportData(s)) {
     lines.push(`## ${c.title}${voted ? ` (${c.points} Punkte)` : ''}`, '');
     for (const e of c.entries) {
       lines.push(`- **Wahrnehmung:** ${e.wahrnehmung.replace(/\n+/g, ' ')}`);
@@ -265,7 +287,7 @@ function exportMarkdown(s) {
   return lines.join('\n');
 }
 
-function exportCsv(s) {
+async function exportCsv(s) {
   // Führendes Apostroph verhindert, dass Excel Text als Formel ausführt.
   const cell = (v) => {
     let t = String(v ?? '');
@@ -273,7 +295,7 @@ function exportCsv(s) {
     return `"${t.replace(/"/g, '""')}"`;
   };
   const rows = [['Cluster', 'Punkte', 'Wahrnehmung', 'Wirkung', 'Wunsch']];
-  for (const c of exportData(s)) {
+  for (const c of await exportData(s)) {
     for (const e of c.entries) rows.push([c.title, c.points, e.wahrnehmung, e.wirkung, e.wunsch]);
   }
   return '﻿' + rows.map((r) => r.map(cell).join(';')).join('\r\n');
@@ -305,46 +327,53 @@ route('GET', /^\/fonts\/(poppins-latin-(?:300|600)-normal\.woff2)$/, (c) =>
   sendFile(c.res, FONTS, c.m[1], 'public, max-age=31536000, immutable'));
 
 // Öffentliche API
-route('GET', /^\/api\/s\/([a-z0-9]+)\/state$/, (c) => {
-  const s = getSession(c.m[1]);
-  if (Number(c.url.searchParams.get('v')) === s.version) {
+route('GET', /^\/api\/s\/([a-z0-9]+)\/state$/, async (c) => {
+  const cur = await current(c.m[1]);
+  if (Number(c.url.searchParams.get('v')) === cur.version) {
     return json(c.res, 200, { unchanged: true });
   }
-  json(c.res, 200, publicState(s));
+  json(c.res, 200, cur.pub);
 });
 
 route('GET', /^\/api\/s\/([a-z0-9]+)\/qr\.svg$/, async (c) => {
-  const s = getSession(c.m[1]);
-  const svg = await QRCode.toString(`${baseUrl(c.req)}/s/${s.id}`, {
+  await current(c.m[1]);
+  const svg = await QRCode.toString(`${baseUrl(c.req)}/s/${c.m[1]}`, {
     type: 'svg', margin: 1, errorCorrectionLevel: 'M',
   });
   send(c.res, 200, svg, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache' });
 });
 
 route('POST', /^\/api\/s\/([a-z0-9]+)\/entries$/, async (c) => {
-  const s = getSession(c.m[1]);
-  if (s.phase !== 'collect') fail(409, 'Die Sammlung ist bereits geschlossen.');
+  const id = c.m[1];
+  const { pub } = await current(id);
+  if (pub.phase !== 'collect') fail(409, 'Die Sammlung ist bereits geschlossen.');
   const b = await body(c.req);
   const wahrnehmung = clean(b.wahrnehmung);
   if (!wahrnehmung) fail(400, 'Bitte fülle das Feld „Wahrnehmung“ aus.');
-  if (entryCount(s.id) >= MAX_ENTRIES) fail(429, 'Die maximale Anzahl an Beiträgen ist erreicht.');
-  q.run(
-    `INSERT INTO entries (id, session_id, wahrnehmung, wirkung, wunsch, sort_key)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    newId(), s.id, wahrnehmung, clean(b.wirkung), clean(b.wunsch),
-    randomBytes(6).readUIntBE(0, 6) / 2 ** 48,
-  );
-  bump(s.id);
+  if (pub.count >= MAX_ENTRIES) fail(429, 'Die maximale Anzahl an Beiträgen ist erreicht.');
+  // Die Phase wird im INSERT noch einmal geprüft, falls die Sammlung genau jetzt schließt.
+  const [inserted] = await q.batch([
+    st(
+      `INSERT INTO entries (id, session_id, wahrnehmung, wirkung, wunsch, sort_key)
+       SELECT ?, id, ?, ?, ?, ? FROM sessions WHERE id = ? AND phase = 'collect'`,
+      newId(), wahrnehmung, clean(b.wirkung), clean(b.wunsch),
+      randomBytes(6).readUIntBE(0, 6) / 2 ** 48, id,
+    ),
+    bump(id),
+  ]);
+  touch(id);
+  if (!inserted.rowsAffected) fail(409, 'Die Sammlung ist bereits geschlossen.');
   json(c.res, 201, { ok: true });
 });
 
 route('POST', /^\/api\/s\/([a-z0-9]+)\/vote$/, async (c) => {
-  const s = getSession(c.m[1]);
-  if (s.phase !== 'vote') fail(409, 'Die Abstimmung ist nicht geöffnet.');
+  const id = c.m[1];
+  const { pub } = await current(id);
+  if (pub.phase !== 'vote') fail(409, 'Die Abstimmung ist nicht geöffnet.');
   const b = await body(c.req);
   const token = typeof b.token === 'string' && /^[\w-]{16,64}$/.test(b.token) ? b.token : null;
   if (!token) fail(400, 'Ungültige Abstimmung.');
-  const valid = new Set(visibleClusters(s.id).map((x) => x.id));
+  const valid = new Set(pub.clusters.map((x) => x.id));
   const alloc = {};
   let total = 0;
   for (const [cid, n] of Object.entries(b.allocations || {})) {
@@ -352,13 +381,12 @@ route('POST', /^\/api\/s\/([a-z0-9]+)\/vote$/, async (c) => {
     if (n > 0) alloc[cid] = n;
     total += n;
   }
-  if (total > s.votes_per_person) fail(400, 'Zu viele Punkte vergeben.');
-  q.run(
+  if (total > pub.votesPerPerson) fail(400, 'Zu viele Punkte vergeben.');
+  await write(id, st(
     `INSERT INTO ballots (session_id, token, allocations) VALUES (?, ?, ?)
      ON CONFLICT (session_id, token) DO UPDATE SET allocations = excluded.allocations`,
-    s.id, token, JSON.stringify(alloc),
-  );
-  bump(s.id);
+    id, token, JSON.stringify(alloc),
+  ));
   json(c.res, 200, { ok: true });
 });
 
@@ -387,11 +415,18 @@ route('POST', /^\/api\/admin\/logout$/, (c) => {
 route('GET', /^\/api\/admin\/me$/, (c) => json(c.res, 200, { moderator: isModerator(c.req) }));
 
 // Moderator: Sessions
-route('GET', /^\/api\/admin\/sessions$/, (c) => {
-  const list = q.all('SELECT * FROM sessions ORDER BY created_day DESC, title').map((s) => ({
-    id: s.id, title: s.title, phase: s.phase, createdDay: s.created_day, count: entryCount(s.id),
-  }));
-  json(c.res, 200, { sessions: list, defaultQuestion: DEFAULT_QUESTION });
+route('GET', /^\/api\/admin\/sessions$/, async (c) => {
+  const list = await q.all(
+    `SELECT s.id, s.title, s.phase, s.created_day,
+       (SELECT COUNT(*) FROM entries e WHERE e.session_id = s.id) AS n
+     FROM sessions s ORDER BY s.created_day DESC, s.title`,
+  );
+  json(c.res, 200, {
+    sessions: list.map((s) => ({
+      id: s.id, title: s.title, phase: s.phase, createdDay: s.created_day, count: s.n,
+    })),
+    defaultQuestion: DEFAULT_QUESTION,
+  });
 }, true);
 
 route('POST', /^\/api\/admin\/sessions$/, async (c) => {
@@ -401,42 +436,39 @@ route('POST', /^\/api\/admin\/sessions$/, async (c) => {
   const votes = Number.isInteger(b.votesPerPerson) && b.votesPerPerson >= 1 && b.votesPerPerson <= 10
     ? b.votesPerPerson : 3;
   const id = newSessionId();
-  q.run(
+  await q.run(
     'INSERT INTO sessions (id, title, question, votes_per_person, created_day) VALUES (?, ?, ?, ?, ?)',
     id, title, question, votes, new Date().toISOString().slice(0, 10),
   );
   json(c.res, 201, { id });
 }, true);
 
-route('GET', /^\/api\/admin\/s\/([a-z0-9]+)$/, (c) => {
-  const s = getSession(c.m[1]);
-  if (Number(c.url.searchParams.get('v')) === s.version) {
+route('GET', /^\/api\/admin\/s\/([a-z0-9]+)$/, async (c) => {
+  const cur = await current(c.m[1]);
+  if (Number(c.url.searchParams.get('v')) === cur.version) {
     return json(c.res, 200, { unchanged: true });
   }
-  json(c.res, 200, adminState(s));
+  json(c.res, 200, await adminState(await getSession(c.m[1])));
 }, true);
 
-route('DELETE', /^\/api\/admin\/s\/([a-z0-9]+)$/, (c) => {
-  getSession(c.m[1]);
-  q.run('DELETE FROM sessions WHERE id = ?', c.m[1]);
+route('DELETE', /^\/api\/admin\/s\/([a-z0-9]+)$/, async (c) => {
+  await getSession(c.m[1]);
+  await q.batch(deleteSessionStatements(c.m[1]));
+  forget(c.m[1]);
   json(c.res, 200, { ok: true });
 }, true);
 
 route('POST', /^\/api\/admin\/s\/([a-z0-9]+)\/phase$/, async (c) => {
-  const s = getSession(c.m[1]);
+  const s = await getSession(c.m[1]);
   const { phase } = await body(c.req);
-  if (!PHASES.includes(phase)) fail(400, 'Unbekannte Phase.');
-  tx(() => {
-    const idx = PHASES.indexOf(phase);
+  const idx = PHASES.indexOf(phase);
+  if (idx < 0) fail(400, 'Unbekannte Phase.');
+  await write(s.id,
     // Zurück in Sammlung/Sichtung: abgegebene Punkte passen nicht mehr zu den Clustern.
-    if (idx <= 1) q.run('DELETE FROM ballots WHERE session_id = ?', s.id);
-    if (idx >= 2) {
-      assignLeftovers(s.id);
-      pruneEmptyClusters(s.id);
-    }
-    q.run('UPDATE sessions SET phase = ?, focus_cluster = NULL WHERE id = ?', phase, s.id);
-    bump(s.id);
-  });
+    idx <= 1 ? [st('DELETE FROM ballots WHERE session_id = ?', s.id)] : [],
+    idx >= 2 ? [...await leftoverStatements(s.id), pruneEmptyClustersSt(s.id)] : [],
+    st('UPDATE sessions SET phase = ?, focus_cluster = NULL WHERE id = ?', phase, s.id),
+  );
   json(c.res, 200, { ok: true });
 }, true);
 
@@ -445,9 +477,9 @@ const needReview = (s) => {
 };
 
 route('POST', /^\/api\/admin\/s\/([a-z0-9]+)\/autocluster$/, async (c) => {
-  const s = getSession(c.m[1]);
+  const s = await getSession(c.m[1]);
   if (s.phase !== 'review') fail(409, 'KI-Clustering ist nur in der Sichtung möglich.');
-  const entries = q.all(
+  const entries = await q.all(
     'SELECT * FROM entries WHERE session_id = ? AND hidden = 0 ORDER BY sort_key', s.id,
   );
   if (entries.length < MIN_FOR_AI) {
@@ -460,93 +492,100 @@ route('POST', /^\/api\/admin\/s\/([a-z0-9]+)\/autocluster$/, async (c) => {
     console.error('Clustering fehlgeschlagen:', e?.status || '', e?.name || 'Error');
     fail(502, 'Das KI-Clustering ist fehlgeschlagen. Du kannst es erneut versuchen oder manuell clustern.');
   }
-  tx(() => {
-    q.run('DELETE FROM clusters WHERE session_id = ?', s.id);
-    for (const cl of result) {
-      const cid = addCluster(s.id, cl.title);
-      for (const i of cl.indexes) {
-        q.run('UPDATE entries SET cluster_id = ? WHERE id = ?', cid, entries[i].id);
-      }
+  const statements = [
+    st('UPDATE entries SET cluster_id = NULL WHERE session_id = ?', s.id),
+    st('DELETE FROM clusters WHERE session_id = ?', s.id),
+  ];
+  result.forEach((cl, i) => {
+    const cid = newId();
+    statements.push(st(
+      'INSERT INTO clusters (id, session_id, title, position) VALUES (?, ?, ?, ?)',
+      cid, s.id, cl.title, i + 1,
+    ));
+    for (const n of cl.indexes) {
+      statements.push(st('UPDATE entries SET cluster_id = ? WHERE id = ?', cid, entries[n].id));
     }
-    bump(s.id);
   });
+  await write(s.id, statements);
   json(c.res, 200, { ok: true });
 }, true);
 
 route('POST', /^\/api\/admin\/s\/([a-z0-9]+)\/clusters$/, async (c) => {
-  const s = getSession(c.m[1]);
+  const s = await getSession(c.m[1]);
   needReview(s);
   const title = clean((await body(c.req)).title, 80) || fail(400, 'Bitte gib einen Titel an.');
-  const id = addCluster(s.id, title);
-  bump(s.id);
+  const id = newId();
+  await write(s.id, addClusterSt(id, s.id, title));
   json(c.res, 201, { id });
 }, true);
 
-const getCluster = (sid, cid) =>
-  q.get('SELECT * FROM clusters WHERE id = ? AND session_id = ?', cid, sid) ||
+const getCluster = async (sid, cid) =>
+  (await q.get('SELECT * FROM clusters WHERE id = ? AND session_id = ?', cid, sid)) ||
   fail(404, 'Cluster nicht gefunden.');
 
+const dissolveSt = (clusterId, moveTo = null) => [
+  st('UPDATE entries SET cluster_id = ? WHERE cluster_id = ?', moveTo, clusterId),
+  st('DELETE FROM clusters WHERE id = ?', clusterId),
+];
+
 route('POST', /^\/api\/admin\/s\/([a-z0-9]+)\/clusters\/([\w-]+)$/, async (c) => {
-  const s = getSession(c.m[1]);
+  const s = await getSession(c.m[1]);
   needReview(s);
-  const cl = getCluster(s.id, c.m[2]);
+  const cl = await getCluster(s.id, c.m[2]);
   const b = await body(c.req);
-  tx(() => {
-    if (b.title !== undefined) {
-      const title = clean(b.title, 80) || fail(400, 'Bitte gib einen Titel an.');
-      q.run('UPDATE clusters SET title = ? WHERE id = ?', title, cl.id);
-    }
-    if (b.mergeInto !== undefined) {
-      const target = getCluster(s.id, b.mergeInto);
-      if (target.id === cl.id) fail(400, 'Ziel und Quelle sind identisch.');
-      q.run('UPDATE entries SET cluster_id = ? WHERE cluster_id = ?', target.id, cl.id);
-      q.run('DELETE FROM clusters WHERE id = ?', cl.id);
-    }
-    bump(s.id);
-  });
+  const statements = [];
+  if (b.title !== undefined) {
+    const title = clean(b.title, 80) || fail(400, 'Bitte gib einen Titel an.');
+    statements.push(st('UPDATE clusters SET title = ? WHERE id = ?', title, cl.id));
+  }
+  if (b.mergeInto !== undefined) {
+    const target = await getCluster(s.id, b.mergeInto);
+    if (target.id === cl.id) fail(400, 'Ziel und Quelle sind identisch.');
+    statements.push(...dissolveSt(cl.id, target.id));
+  }
+  await write(s.id, statements);
   json(c.res, 200, { ok: true });
 }, true);
 
-route('DELETE', /^\/api\/admin\/s\/([a-z0-9]+)\/clusters\/([\w-]+)$/, (c) => {
-  const s = getSession(c.m[1]);
+route('DELETE', /^\/api\/admin\/s\/([a-z0-9]+)\/clusters\/([\w-]+)$/, async (c) => {
+  const s = await getSession(c.m[1]);
   needReview(s);
-  const cl = getCluster(s.id, c.m[2]);
-  q.run('DELETE FROM clusters WHERE id = ?', cl.id); // Beiträge werden "ohne Cluster"
-  bump(s.id);
+  const cl = await getCluster(s.id, c.m[2]);
+  await write(s.id, dissolveSt(cl.id)); // Beiträge werden "ohne Cluster"
   json(c.res, 200, { ok: true });
 }, true);
 
 route('POST', /^\/api\/admin\/s\/([a-z0-9]+)\/entries\/([\w-]+)$/, async (c) => {
-  const s = getSession(c.m[1]);
+  const s = await getSession(c.m[1]);
   needReview(s);
-  const e = q.get('SELECT * FROM entries WHERE id = ? AND session_id = ?', c.m[2], s.id) ||
+  const e = (await q.get('SELECT * FROM entries WHERE id = ? AND session_id = ?', c.m[2], s.id)) ||
     fail(404, 'Beitrag nicht gefunden.');
   const b = await body(c.req);
+  const statements = [];
   if (b.clusterId !== undefined) {
-    const cid = b.clusterId === null ? null : getCluster(s.id, b.clusterId).id;
-    q.run('UPDATE entries SET cluster_id = ? WHERE id = ?', cid, e.id);
+    const cid = b.clusterId === null ? null : (await getCluster(s.id, b.clusterId)).id;
+    statements.push(st('UPDATE entries SET cluster_id = ? WHERE id = ?', cid, e.id));
   }
   if (b.hidden !== undefined) {
-    q.run('UPDATE entries SET hidden = ? WHERE id = ?', b.hidden ? 1 : 0, e.id);
+    statements.push(st('UPDATE entries SET hidden = ? WHERE id = ?', b.hidden ? 1 : 0, e.id));
   }
-  bump(s.id);
+  await write(s.id, statements);
   json(c.res, 200, { ok: true });
 }, true);
 
 route('POST', /^\/api\/admin\/s\/([a-z0-9]+)\/focus$/, async (c) => {
-  const s = getSession(c.m[1]);
+  const s = await getSession(c.m[1]);
   const { clusterId } = await body(c.req);
-  const cid = clusterId ? getCluster(s.id, clusterId).id : null;
-  q.run('UPDATE sessions SET focus_cluster = ? WHERE id = ?', cid, s.id);
-  bump(s.id);
+  const cid = clusterId ? (await getCluster(s.id, clusterId)).id : null;
+  await write(s.id, st('UPDATE sessions SET focus_cluster = ? WHERE id = ?', cid, s.id));
   json(c.res, 200, { ok: true });
 }, true);
 
-route('GET', /^\/api\/admin\/s\/([a-z0-9]+)\/export\.(md|csv)$/, (c) => {
-  const s = getSession(c.m[1]);
+route('GET', /^\/api\/admin\/s\/([a-z0-9]+)\/export\.(md|csv)$/, async (c) => {
+  const s = await getSession(c.m[1]);
   if (s.phase === 'collect') fail(409, 'Export erst nach Schließen der Sammlung.');
   const md = c.m[2] === 'md';
-  send(c.res, 200, md ? exportMarkdown(s) : exportCsv(s), {
+  send(c.res, 200, md ? await exportMarkdown(s) : await exportCsv(s), {
     'Content-Type': md ? 'text/markdown; charset=utf-8' : 'text/csv; charset=utf-8',
     'Content-Disposition': `attachment; filename="klartext-${s.id}.${c.m[2]}"`,
     'Cache-Control': 'no-store',
@@ -575,6 +614,10 @@ const server = createServer(async (req, res) => {
   }
 });
 
-purgeOld();
-setInterval(purgeOld, 6 * 3600_000).unref();
-server.listen(PORT, () => console.log(`Klartext Tool läuft auf Port ${PORT}`));
+const purge = () => purgeOld().then((ids) => ids.forEach(forget))
+  .catch((e) => console.error('Aufräumen fehlgeschlagen:', e?.name || 'Error'));
+
+await init();
+await purge();
+setInterval(purge, 6 * 3600_000).unref();
+server.listen(PORT, () => console.log(`Klartext Tool läuft auf Port ${PORT} (Daten: ${storage})`));

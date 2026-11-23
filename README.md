@@ -29,31 +29,53 @@ clustert, danach sieht die Gruppe die Originaltexte und priorisiert per Punkteve
 
 ## Lokal starten
 
-Voraussetzung: Node.js ab 22.13.
+Voraussetzung: Node.js ab 22.
 
 ```bash
 npm install
 ```
 
 ```bash
-MODERATOR_PASSWORD=geheim ANTHROPIC_API_KEY=sk-ant-... npm start
+MODERATOR_PASSWORD=geheim npm start
 ```
 
-Dann `http://localhost:3000/admin` öffnen. Ohne `ANTHROPIC_API_KEY` läuft alles
-außer dem KI-Clustering.
+Dann `http://localhost:3000/admin` öffnen. Die Daten liegen lokal in
+`data/klartext.db`. Ohne `ANTHROPIC_API_KEY` läuft alles außer dem KI-Clustering.
 
-## Deployment
+## Deployment ohne laufende Kosten
 
-Die App ist ein einzelner Node-Prozess mit einer SQLite-Datei. Sie braucht:
+Aufbau: Die App läuft als Gratis-Webdienst bei Render, die Daten liegen in einer
+Gratis-Datenbank bei Turso. Der Render-Dienst schläft ohne Zugriffe ein und
+verliert dabei seine lokalen Dateien; deshalb liegen die Daten extern.
+Prüfe die aktuellen Bedingungen der Gratis-Tarife beim Anlegen.
 
-- einen Dienst, der das `Dockerfile` baut und per HTTPS ausliefert,
-- ein dauerhaftes Laufwerk, eingehängt unter `/app/data`,
-- die Variablen aus `.env.example` (`MODERATOR_PASSWORD`, `ANTHROPIC_API_KEY`, `PUBLIC_URL`),
-- genau **eine** Instanz (SQLite, kein Mehrfachbetrieb).
+**1. Datenbank (turso.tech)**
 
-Das geht bei Anbietern wie Railway, Render oder Fly.io ohne weitere Anpassung.
-Wähle einen Tarif, bei dem die App nicht einschläft, sonst dauert der erste
-Aufruf im Workshop lange.
+1. Konto anlegen, eine Datenbank erstellen (Region Frankfurt, falls angeboten).
+2. Die Datenbank-URL (`libsql://…`) und ein Token kopieren.
+
+**2. App (render.com)**
+
+1. Mit GitHub anmelden, „New“ → „Blueprint“, dieses Repository wählen.
+   Render liest `render.yaml` und fragt die Variablen ab.
+2. Eintragen: `MODERATOR_PASSWORD`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`,
+   optional `ANTHROPIC_API_KEY`. `PUBLIC_URL` vorerst leer lassen.
+3. Nach dem Deploy `/admin` an der Render-Adresse öffnen. Im Render-Log steht
+   beim Start „Daten: Turso“. Steht dort „lokale Datei“, fehlt die Datenbank-URL.
+
+**3. Eigene Adresse (optional)**
+
+1. In Render unter „Custom Domains“ z. B. `klartext.dehn-consulting.com` anlegen.
+2. Den angezeigten CNAME beim Domain-Anbieter eintragen.
+3. `PUBLIC_URL` auf diese Adresse setzen, damit der QR-Code dorthin zeigt.
+
+**Im Betrieb beachten**
+
+- Nach einer Pause braucht der erste Aufruf bis zu einer Minute. Öffne `/admin`
+  einige Minuten vor dem Workshop.
+- Es darf genau **eine** Instanz laufen (der Zwischenspeicher für den Abruf
+  liegt im Prozess).
+- Jeder Push auf `main` wird automatisch ausgeliefert.
 
 ## Anonymität: was gilt und was nicht
 
@@ -61,12 +83,17 @@ Aufruf im Workshop lange.
 Browserkennungen, Zeitstempel pro Beitrag, die Reihenfolge des Eingangs.
 Beiträge bekommen eine zufällige ID und werden überall in zufälliger Reihenfolge
 gezeigt. Das Abstimmungs-Token entsteht erst bei der Abstimmung im Browser und
-ist mit keinem Beitrag verknüpft. `npm test` prüft diese Punkte gegen die echte
+ist mit keinem Beitrag verknüpft. `npm test` prüft diese Punkte gegen eine lokale
 Datenbankdatei.
 
 **Grenzen, die du kennen solltest:**
 
-- Der Hosting-Anbieter kann vor der App eigene Zugriffsprotokolle mit IP-Adressen
+- Nach außen, also für Teilnehmende, Kunde und Moderator, ist nicht
+  nachvollziehbar, wer was geschrieben hat. Technische Dienstleister sehen mehr:
+- Die Beitragstexte liegen bei Turso (Datenbank). Gelöschte Sessions sind dort
+  aus der Datenbank entfernt; ob der Anbieter Sicherungen vorhält, liegt bei ihm.
+  Das Überschreiben gelöschter Daten auf der Platte gilt nur für die lokale Datei.
+- Der Hosting-Anbieter (Render) kann vor der App eigene Zugriffsprotokolle mit IP-Adressen
   führen. Die enthalten keine Beitragstexte, aber Zeitpunkte von Zugriffen.
 - In kleinen Gruppen kann der Schreibstil eine Person erkennbar machen. Die App
   zeigt immer die Originaltexte.
@@ -89,14 +116,16 @@ npm test
 
 Spielt einen kompletten Workshop durch: 3 simulierte Smartphones, 15 Beiträge,
 alle Phasen, Export, Löschung. Braucht ein global installiertes Playwright. Die
-Claude API wird dabei durch einen lokalen Stellvertreter ersetzt; das echte
-Clustering wurde damit nicht geprüft.
+Claude API wird dabei durch einen lokalen Stellvertreter ersetzt und die Daten
+liegen in einer lokalen Datei. Das echte Clustering und die Verbindung zu Turso
+prüft der Test nicht.
 
 ## Aufbau
 
 | Datei | Inhalt |
 |---|---|
 | `server.js` | HTTP-Server, Routen, Phasenlogik, Export |
-| `db.js` | Tabellen, Löschfrist |
+| `db.js` | Datenbankzugriff (lokale Datei oder Turso), Tabellen, Löschfrist |
+| `render.yaml` | Vorlage für den Gratis-Dienst bei Render |
 | `cluster.js` | Prompt und Aufruf der Claude API |
 | `public/` | Oberflächen (ohne Build-Schritt), DEC-Design in `styles.css` |

@@ -1,0 +1,18 @@
+# Render-Blueprint: Gratis-Webdienst aus dem Dockerfile.
+# Die Werte der Variablen trägst du beim Anlegen in Render ein.
+services:
+  - type: web
+    name: klartext-tool
+    runtime: docker
+    plan: free
+    envVars:
+      - key: MODERATOR_PASSWORD
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
