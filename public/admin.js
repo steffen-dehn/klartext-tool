@@ -7,7 +7,7 @@ function shell(...content) {
   app.replaceChildren(h('main', { class: 'page wide' },
     h('div', { class: 'brand' },
       h('img', { src: '/assets/img/dec-logo.png', alt: 'Dehn Consulting' }),
-      h('span', { class: 'tag' }, 'Klartext · Moderation')),
+      h('span', { class: 'tag' }, 'Klartext Tool · Moderation')),
     content));
 }
 

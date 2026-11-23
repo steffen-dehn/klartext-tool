@@ -1,4 +1,4 @@
-// Klartext – anonymes 3W-Feedback für moderierte Workshops.
+// Klartext Tool – anonymes 3W-Feedback für moderierte Workshops.
 // Der Server schreibt bewusst KEIN Request-Log und liest keine IP-Adressen.
 import { createServer } from 'node:http';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -577,4 +577,4 @@ const server = createServer(async (req, res) => {
 
 purgeOld();
 setInterval(purgeOld, 6 * 3600_000).unref();
-server.listen(PORT, () => console.log(`Klartext läuft auf Port ${PORT}`));
+server.listen(PORT, () => console.log(`Klartext Tool läuft auf Port ${PORT}`));

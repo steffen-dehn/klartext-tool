@@ -1,4 +1,4 @@
-# Klartext
+# Klartext Tool
 
 Anonymes 3W-Feedback (Wahrnehmung, Wirkung, Wunsch) für moderierte Workshops.
 Teilnehmende scannen einen QR-Code, schreiben anonym, der Moderator sichtet und

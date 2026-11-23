@@ -46,7 +46,7 @@ function headerEl() {
   return [
     h('div', { class: 'brand' },
       h('a', { href: '/admin' }, h('img', { src: '/assets/img/dec-logo.png', alt: 'Zur Übersicht' })),
-      h('span', { class: 'tag' }, 'Klartext · Moderation')),
+      h('span', { class: 'tag' }, 'Klartext Tool · Moderation')),
     h('h1', {}, state.title),
     h('div', { class: 'bar' }),
     h('p', { class: 'muted' }, state.question),
