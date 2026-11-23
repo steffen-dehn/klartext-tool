@@ -1,0 +1,160 @@
+/* DEC Corporate Design: Grün A8B300, Grau 6E6E6E, Hellgrau F4F4F4, Poppins Light/SemiBold */
+@font-face {
+  font-family: Poppins; font-weight: 300; font-display: swap;
+  src: url(/fonts/poppins-latin-300-normal.woff2) format('woff2');
+}
+@font-face {
+  font-family: Poppins; font-weight: 600; font-display: swap;
+  src: url(/fonts/poppins-latin-600-normal.woff2) format('woff2');
+}
+:root {
+  --green: #a8b300;
+  --green-dark: #8c9500;
+  --gray: #6e6e6e;
+  --light: #f4f4f4;
+  --line: #dcdcdc;
+  --black: #000;
+  --white: #fff;
+  --danger: #b3261e;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--white); color: var(--black);
+  font-family: Poppins, system-ui, sans-serif; font-weight: 300;
+  font-size: 17px; line-height: 1.5;
+}
+h1, h2, h3, strong, b, label, th { font-weight: 600; }
+h1, h2, h3 { line-height: 1.2; margin: 0; text-wrap: balance; }
+p { margin: 0 0 .8em; }
+a { color: inherit; }
+[hidden] { display: none !important; }
+
+/* Grüner Balken unter dem Titel – das DEC-Kennzeichen */
+.bar { width: 96px; height: 8px; background: var(--green); margin: 14px 0 22px; }
+
+.page { max-width: 640px; margin: 0 auto; padding: 24px 16px 96px; }
+.page.wide { max-width: 1100px; }
+.page h1 { font-size: clamp(24px, 6vw, 34px); }
+.brand { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.brand img { height: 40px; width: auto; }
+.brand .tag { color: var(--gray); font-size: 13px; letter-spacing: .12em; text-transform: uppercase; }
+.muted { color: var(--gray); }
+.small { font-size: 14px; }
+
+.card { background: var(--light); padding: 16px; margin-bottom: 14px; }
+.card.white { background: var(--white); border: 1px solid var(--line); }
+.notice { border-left: 6px solid var(--green); background: var(--light); padding: 12px 14px; margin-bottom: 18px; }
+.error { color: var(--danger); font-weight: 600; margin: 8px 0; }
+
+/* Formulare */
+.field { margin-bottom: 20px; }
+.field label { display: block; font-size: 19px; }
+.field .hint { color: var(--gray); font-size: 15px; margin: 2px 0 6px; }
+.field .example { color: var(--gray); font-size: 14px; font-style: italic; margin-top: 6px; }
+.opt { font-weight: 300; color: var(--gray); font-size: 14px; }
+textarea, input[type=text], input[type=password], input[type=number], select {
+  width: 100%; font: inherit; color: inherit; background: var(--white);
+  border: 1px solid var(--gray); border-radius: 0; padding: 10px 12px;
+}
+textarea { min-height: 96px; resize: vertical; }
+textarea:focus, input:focus, select:focus, button:focus-visible, a:focus-visible {
+  outline: 3px solid var(--green); outline-offset: 1px;
+}
+button, .btn {
+  font: inherit; font-weight: 600; cursor: pointer; border: 0; border-radius: 0;
+  background: var(--green); color: var(--black); padding: 12px 20px;
+  text-decoration: none; display: inline-block; min-height: 44px;
+}
+button:hover, .btn:hover { background: var(--green-dark); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.secondary, .btn.secondary { background: var(--white); border: 1px solid var(--black); }
+button.secondary:hover, .btn.secondary:hover { background: var(--light); }
+button.quiet { background: none; padding: 6px 8px; min-height: 0; font-weight: 300; text-decoration: underline; }
+button.quiet:hover { background: var(--light); }
+button.danger { background: var(--white); border: 1px solid var(--danger); color: var(--danger); }
+button.block { width: 100%; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.row.end { justify-content: flex-end; }
+.grow { flex: 1 1 200px; }
+
+/* Beiträge im 3W-Format */
+.cluster { margin-bottom: 26px; }
+.cluster > h2 { font-size: 22px; }
+.cluster .meta { color: var(--gray); font-size: 14px; }
+.entry { background: var(--light); padding: 12px 14px; margin-top: 10px; }
+.entry.is-hidden { opacity: .5; }
+.entry dl { margin: 0; }
+.entry dt { font-weight: 600; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--gray); margin-top: 8px; }
+.entry dt:first-child { margin-top: 0; }
+.entry dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Abstimmung */
+.vote-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.vote-row .title { flex: 1; font-weight: 600; }
+.stepper { display: flex; align-items: center; gap: 6px; }
+.stepper button { width: 44px; padding: 0; font-size: 22px; }
+.stepper .n { width: 28px; text-align: center; font-weight: 600; font-size: 20px; }
+.sticky { position: sticky; bottom: 0; background: var(--white); padding: 12px 0; border-top: 1px solid var(--line); }
+
+/* Rangliste */
+.rank { display: grid; grid-template-columns: 1.6em 1fr auto; gap: 4px 14px; align-items: center; margin-bottom: 14px; }
+.rank .pos { font-weight: 600; color: var(--gray); }
+.rank .title { font-weight: 600; }
+.rank .pts { font-weight: 600; }
+.rank .track { grid-column: 2 / 4; height: 10px; background: var(--light); }
+.rank .fill { height: 100%; background: var(--green); }
+
+/* Moderator */
+.steps { display: flex; gap: 4px; margin: 0 0 18px; padding: 0; list-style: none; flex-wrap: wrap; }
+.steps li { flex: 1 1 110px; padding: 8px 10px; background: var(--light); color: var(--gray); font-size: 14px; border-bottom: 6px solid transparent; }
+.steps li.active { color: var(--black); font-weight: 600; border-bottom-color: var(--green); }
+.steps li.done { color: var(--black); }
+.mod-cluster { border: 1px solid var(--line); padding: 14px; margin-bottom: 16px; }
+.mod-cluster.loose { border-style: dashed; }
+.mod-cluster .head { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.mod-cluster .head input[type=text] { flex: 1 1 240px; font-weight: 600; }
+.mod-cluster .head select { width: auto; max-width: 220px; }
+.entry .tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.entry .tools select { width: auto; max-width: 260px; padding: 6px 8px; font-size: 14px; }
+.qr-box { width: 180px; background: var(--white); border: 1px solid var(--line); padding: 6px; }
+.qr-box img { display: block; width: 100%; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.busy::after { content: ' …'; }
+
+/* Beamer: aus 5 m lesbar, DEC-Balken rechts, Logo unten rechts */
+body.beamer { height: 100vh; overflow: hidden; font-size: clamp(18px, 1.5vw, 30px); }
+.stage { height: 100vh; padding: 5vh 7vw 9vh 5vw; display: flex; flex-direction: column; }
+.stage::after { content: ''; position: fixed; top: 0; right: 0; bottom: 0; width: 1.6vw; background: var(--green); }
+.stage .logo { position: fixed; right: 3.2vw; bottom: 2.5vh; height: 6vh; }
+.stage .foot { position: fixed; left: 5vw; bottom: 3vh; color: var(--gray); font-size: .8em; }
+.stage h1 { font-size: clamp(30px, 3.4vw, 68px); }
+.stage .bar { width: 9vw; height: 1.2vh; margin: 2vh 0 3vh; }
+.stage .body { flex: 1; min-height: 0; }
+.collect { display: grid; grid-template-columns: 1fr auto; gap: 5vw; align-items: center; height: 100%; }
+.collect .qr { width: min(34vw, 62vh); }
+.collect .qr img { width: 100%; display: block; }
+.collect .url { font-weight: 600; margin-top: 1vh; text-align: center; overflow-wrap: anywhere; }
+.big-count { font-size: 5em; font-weight: 600; line-height: 1; }
+.steps3 { margin: 3vh 0 0; padding: 0; list-style: none; }
+.steps3 li { margin-bottom: 1.2vh; }
+.steps3 b { display: inline-block; min-width: 8.5em; }
+.stage .body.scroll { overflow-y: auto; padding-bottom: 4vh; }
+.board { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 3vh 2vw; align-items: start; }
+.board .cluster { margin: 0; }
+.board .cluster > h2 { font-size: 1.2em; border-bottom: .5vh solid var(--green); padding-bottom: .6vh; }
+.board .entry { font-size: .7em; padding: .6em .8em; }
+.board .entry dt { font-size: .62em; }
+.focus .entries { columns: 2; column-gap: 2vw; }
+.focus .entry { break-inside: avoid; font-size: 1em; margin: 0 0 2vh; padding: .8em 1em; }
+.focus .entry dt { font-size: .6em; }
+.beamer .rank { font-size: 1.3em; margin-bottom: 2.4vh; }
+.beamer .rank .track { height: 2vh; }
+.vote-list { columns: 2; column-gap: 3vw; font-size: 1.3em; font-weight: 600; }
+.vote-list div { break-inside: avoid; padding: .5em 0; border-bottom: 1px solid var(--line); }
+
+@media (max-width: 520px) {
+  .mod-cluster .head select { max-width: 100%; }
+}
+@media print { .no-print { display: none; } }
